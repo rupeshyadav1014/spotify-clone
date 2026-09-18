@@ -2,7 +2,25 @@
 
 import { useEffect, useRef, useState } from "react";
 
-const songs = [
+type Song = {
+  name: string;
+  artist: string;
+  cover: string;
+  audio: string;
+};
+
+type RadioStation = {
+  stationuuid: string;
+  name: string;
+  url_resolved: string;
+  favicon?: string;
+  language?: string;
+  country?: string;
+  codec?: string;
+  bitrate?: number;
+};
+
+const localSongs: Song[] = [
   {
     name: "Hanumanansh",
     artist: "NCS Release",
@@ -76,22 +94,127 @@ function formatTime(seconds: number) {
 
 export default function Home() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const radioAudioRef = useRef<HTMLAudioElement | null>(null);
 
+  const [songs, setSongs] = useState<Song[]>(localSongs);
   const [currentSong, setCurrentSong] = useState(0);
+  const [search, setSearch] = useState("");
+
   const [isPlaying, setIsPlaying] = useState(false);
   const [isShuffle, setIsShuffle] = useState(false);
   const [isRepeat, setIsRepeat] = useState(false);
+
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
+
   const [volume, setVolume] = useState(1);
   const [lastVolume, setLastVolume] = useState(1);
 
-  const song = songs[currentSong];
+  const [apiLoading, setApiLoading] = useState(true);
 
+  // Radio
+  const [radioStations, setRadioStations] = useState<RadioStation[]>([]);
+  const [radioLoading, setRadioLoading] = useState(true);
+  const [radioPlaying, setRadioPlaying] = useState<string | null>(null);
+
+  const song = songs[currentSong] ?? localSongs[0];
+
+  const filteredSongs = songs.filter((item) =>
+    `${item.name} ${item.artist}`
+      .toLowerCase()
+      .includes(search.toLowerCase())
+  );
+
+  // Load songs from Jamendo API
+  useEffect(() => {
+    const loadJamendoSongs = async () => {
+      try {
+        setApiLoading(true);
+
+        const response = await fetch("/api/jamendo");
+
+        if (!response.ok) {
+          throw new Error("API request failed");
+        }
+
+        const data = await response.json();
+
+        if (!Array.isArray(data.results) || data.results.length === 0) {
+          throw new Error("No songs received");
+        }
+
+        const apiSongs: Song[] = data.results
+          .filter(
+            (item: {
+              name?: string;
+              artist_name?: string;
+              album_image?: string;
+              audio?: string;
+            }) => item.audio
+          )
+          .map(
+            (item: {
+              name?: string;
+              artist_name?: string;
+              album_image?: string;
+              audio?: string;
+            }) => ({
+              name: item.name || "Unknown Song",
+              artist: item.artist_name || "Unknown Artist",
+              cover: item.album_image || "/covers/1.jpg",
+              audio: item.audio || "",
+            })
+          );
+
+        if (apiSongs.length > 0) {
+          setSongs(apiSongs);
+          setCurrentSong(0);
+        }
+      } catch (error) {
+        console.error("Jamendo API error:", error);
+      } finally {
+        setApiLoading(false);
+      }
+    };
+
+    loadJamendoSongs();
+  }, []);
+
+  // Load India Radio stations
+  useEffect(() => {
+    const loadRadioStations = async () => {
+      try {
+        setRadioLoading(true);
+
+        const response = await fetch("/api/radio");
+
+        if (!response.ok) {
+          throw new Error("Radio API request failed");
+        }
+
+        const data = await response.json();
+
+        if (Array.isArray(data)) {
+          setRadioStations(data);
+        } else {
+          setRadioStations([]);
+        }
+      } catch (error) {
+        console.error("Radio API error:", error);
+        setRadioStations([]);
+      } finally {
+        setRadioLoading(false);
+      }
+    };
+
+    loadRadioStations();
+  }, []);
+
+  // Load current song
   useEffect(() => {
     const audio = audioRef.current;
 
-    if (!audio) return;
+    if (!audio || !song?.audio) return;
 
     audio.src = song.audio;
     audio.volume = volume;
@@ -99,17 +222,24 @@ export default function Home() {
 
     setCurrentTime(0);
     setDuration(0);
-    setIsPlaying(false);
-  }, [currentSong]);
+  }, [currentSong, songs]);
 
+  // Volume
   useEffect(() => {
     const audio = audioRef.current;
 
-    if (!audio) return;
+    if (audio) {
+      audio.volume = volume;
+    }
 
-    audio.volume = volume;
+    const radioAudio = radioAudioRef.current;
+
+    if (radioAudio) {
+      radioAudio.volume = volume;
+    }
   }, [volume]);
 
+  // Audio events
   useEffect(() => {
     const audio = audioRef.current;
 
@@ -123,15 +253,6 @@ export default function Home() {
       setDuration(audio.duration);
     };
 
-    const handleEnded = () => {
-      if (isRepeat) {
-        audio.currentTime = 0;
-        audio.play();
-      } else {
-        playNext();
-      }
-    };
-
     const handlePlay = () => {
       setIsPlaying(true);
     };
@@ -140,21 +261,31 @@ export default function Home() {
       setIsPlaying(false);
     };
 
+    const handleEnded = () => {
+      if (isRepeat) {
+        audio.currentTime = 0;
+        audio.play().catch(() => {});
+      } else {
+        playNext();
+      }
+    };
+
     audio.addEventListener("timeupdate", handleTimeUpdate);
     audio.addEventListener("loadedmetadata", handleLoadedMetadata);
-    audio.addEventListener("ended", handleEnded);
     audio.addEventListener("play", handlePlay);
     audio.addEventListener("pause", handlePause);
+    audio.addEventListener("ended", handleEnded);
 
     return () => {
       audio.removeEventListener("timeupdate", handleTimeUpdate);
       audio.removeEventListener("loadedmetadata", handleLoadedMetadata);
-      audio.removeEventListener("ended", handleEnded);
       audio.removeEventListener("play", handlePlay);
       audio.removeEventListener("pause", handlePause);
+      audio.removeEventListener("ended", handleEnded);
     };
-  }, [isRepeat, isShuffle, currentSong]);
+  }, [isRepeat, isShuffle, currentSong, songs]);
 
+  // Keyboard controls
   useEffect(() => {
     const handleKeyboard = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
@@ -190,12 +321,23 @@ export default function Home() {
     return () => {
       window.removeEventListener("keydown", handleKeyboard);
     };
-  }, [isPlaying, currentSong, isShuffle, volume]);
+  }, [isPlaying, currentSong, isShuffle, volume, songs]);
 
+  // Play normal song
   const playSong = async (index: number) => {
     const audio = audioRef.current;
 
-    if (!audio) return;
+    if (!audio || !songs[index]) return;
+
+    // Stop radio
+    const radioAudio = radioAudioRef.current;
+
+    if (radioAudio) {
+      radioAudio.pause();
+      radioAudio.currentTime = 0;
+    }
+
+    setRadioPlaying(null);
 
     if (index !== currentSong) {
       setCurrentSong(index);
@@ -203,6 +345,7 @@ export default function Home() {
       audio.src = songs[index].audio;
       audio.volume = volume;
       audio.load();
+
       setCurrentTime(0);
 
       try {
@@ -223,19 +366,25 @@ export default function Home() {
     }
   };
 
+  // Play / pause normal song
   const togglePlay = async () => {
     const audio = audioRef.current;
 
-    if (!audio) return;
+    if (!audio || !song?.audio) return;
 
     if (isPlaying) {
       audio.pause();
       setIsPlaying(false);
     } else {
-      if (!audio.src) {
-        audio.src = song.audio;
-        audio.load();
+      // Stop radio
+      const radioAudio = radioAudioRef.current;
+
+      if (radioAudio) {
+        radioAudio.pause();
+        radioAudio.currentTime = 0;
       }
+
+      setRadioPlaying(null);
 
       try {
         await audio.play();
@@ -247,21 +396,23 @@ export default function Home() {
   };
 
   const playNext = () => {
+    if (songs.length === 0) return;
+
     let nextIndex: number;
 
-    if (isShuffle) {
+    if (isShuffle && songs.length > 1) {
       do {
         nextIndex = Math.floor(Math.random() * songs.length);
-      } while (songs.length > 1 && nextIndex === currentSong);
+      } while (nextIndex === currentSong);
     } else {
       nextIndex = (currentSong + 1) % songs.length;
     }
 
-    setCurrentSong(nextIndex);
-
     const audio = audioRef.current;
 
-    if (audio) {
+    setCurrentSong(nextIndex);
+
+    if (audio && songs[nextIndex]) {
       audio.src = songs[nextIndex].audio;
       audio.volume = volume;
       audio.load();
@@ -276,7 +427,7 @@ export default function Home() {
   const playPrevious = () => {
     const audio = audioRef.current;
 
-    if (!audio) return;
+    if (!audio || songs.length === 0) return;
 
     if (audio.currentTime > 3) {
       audio.currentTime = 0;
@@ -334,11 +485,51 @@ export default function Home() {
       audio.currentTime = 0;
     }
 
+    const radioAudio = radioAudioRef.current;
+
+    if (radioAudio) {
+      radioAudio.pause();
+      radioAudio.currentTime = 0;
+    }
+
     setCurrentSong(0);
     setIsPlaying(false);
+    setRadioPlaying(null);
     setIsShuffle(false);
     setIsRepeat(false);
     setCurrentTime(0);
+  };
+  // Play radio station
+  const playRadio = async (station: RadioStation) => {
+    const radioAudio = radioAudioRef.current;
+
+    if (!radioAudio || !station.url_resolved) return;
+
+    if (radioPlaying === station.stationuuid) {
+      radioAudio.pause();
+      setRadioPlaying(null);
+      return;
+    }
+
+    const audio = audioRef.current;
+
+    if (audio) {
+      audio.pause();
+    }
+
+    setIsPlaying(false);
+
+    radioAudio.pause();
+    radioAudio.src = station.url_resolved;
+    radioAudio.volume = volume;
+
+    try {
+      await radioAudio.play();
+      setRadioPlaying(station.stationuuid);
+    } catch (error) {
+      console.error("Radio playback error:", error);
+      setRadioPlaying(null);
+    }
   };
 
   const progress =
@@ -347,6 +538,7 @@ export default function Home() {
   return (
     <main>
       <audio ref={audioRef} preload="metadata" />
+      <audio ref={radioAudioRef} preload="none" />
 
       <header className="navbar">
         <a href="#home" className="brand">
@@ -356,12 +548,21 @@ export default function Home() {
 
         <nav className="nav-links">
           <a href="#home">Home</a>
+          <a href="#radio">Radio</a>
           <a href="#about">About</a>
         </nav>
 
         <div className="status">
           <span className="status-dot" />
-          <span>{isPlaying ? "Now Playing" : "Music Player"}</span>
+          <span>
+            {apiLoading
+              ? "Loading Music"
+              : radioPlaying
+              ? "Radio Playing"
+              : isPlaying
+              ? "Now Playing"
+              : "Music Player"}
+          </span>
         </div>
       </header>
 
@@ -374,7 +575,7 @@ export default function Home() {
           </h1>
 
           <p className="hero-text">
-            No Copyright Sounds — listen, control and enjoy your music.
+            Music powered by Jamendo API + Indian Radio.
           </p>
         </div>
       </section>
@@ -384,7 +585,7 @@ export default function Home() {
           <div className="section-heading">
             <div>
               <h2>Your Songs</h2>
-              <p>{songs.length} songs</p>
+              <p>{filteredSongs.length} songs</p>
             </div>
 
             <button
@@ -396,51 +597,83 @@ export default function Home() {
             </button>
           </div>
 
+          {/* Search */}
+          <div style={{ marginBottom: "20px" }}>
+            <input
+              type="text"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search songs or artists..."
+              aria-label="Search songs"
+              style={{
+                width: "100%",
+                padding: "12px 16px",
+                borderRadius: "12px",
+                border: "1px solid rgba(255,255,255,0.12)",
+                background: "rgba(255,255,255,0.06)",
+                color: "white",
+                outline: "none",
+                fontSize: "14px",
+              }}
+            />
+          </div>
+
           <div className="song-item-container">
-            {songs.map((item, index) => (
-              <article
-                className={`songItem ${
-                  index === currentSong && isPlaying ? "active" : ""
-                }`}
-                key={item.name}
-              >
-                <img
-                  src={item.cover}
-                  alt={`${item.name} cover`}
-                  className="song-cover"
-                />
+            {filteredSongs.map((item) => {
+              const actualIndex = songs.indexOf(item);
 
-                <div className="song-details">
-                  <strong className="songName">{item.name}</strong>
-                  <small>{item.artist}</small>
-                </div>
-
-                <span className="song-duration">
-                  {index === currentSong
-                    ? formatTime(duration)
-                    : "00:00"}
-                </span>
-
-                <button
-                  type="button"
-                  className="songItemPlay"
-                  aria-label={
-                    index === currentSong && isPlaying
-                      ? `Pause ${item.name}`
-                      : `Play ${item.name}`
-                  }
-                  onClick={() => {
-                    if (index === currentSong && isPlaying) {
-                      togglePlay();
-                    } else {
-                      playSong(index);
-                    }
-                  }}
+              return (
+                <article
+                  className={`songItem ${
+                    actualIndex === currentSong && isPlaying
+                      ? "active"
+                      : ""
+                  }`}
+                  key={`${item.name}-${actualIndex}`}
                 >
-                  {index === currentSong && isPlaying ? "❚❚" : "▶"}
-                </button>
-              </article>
-            ))}
+                  <img
+                    src={item.cover}
+                    alt={`${item.name} cover`}
+                    className="song-cover"
+                  />
+
+                  <div className="song-details">
+                    <strong className="songName">{item.name}</strong>
+                    <small>{item.artist}</small>
+                  </div>
+
+                  <span className="song-duration">
+                    {actualIndex === currentSong
+                      ? formatTime(duration)
+                      : "00:00"}
+                  </span>
+
+                  <button
+                    type="button"
+                    className="songItemPlay"
+                    aria-label={
+                      actualIndex === currentSong && isPlaying
+                        ? `Pause ${item.name}`
+                        : `Play ${item.name}`
+                    }
+                    onClick={() => {
+                      if (
+                        actualIndex === currentSong &&
+                        isPlaying
+                      ) {
+                        togglePlay();
+                      } else {
+                        playSong(actualIndex);
+                      }
+                    }}
+                  >
+                    {actualIndex === currentSong && isPlaying
+                      ? "❚❚"
+                      : "▶"}
+                  </button>
+                </article>
+              );
+            })}
           </div>
         </div>
 
@@ -452,13 +685,181 @@ export default function Home() {
               className="banner-gif"
             />
 
-            <p>NOW PLAYING</p>
+            <p>
+              {radioPlaying ? "RADIO PLAYING" : "NOW PLAYING"}
+            </p>
 
-            <h2>{song.name}</h2>
+            <h2>
+              {radioPlaying
+                ? radioStations.find(
+                    (station) =>
+                      station.stationuuid === radioPlaying
+                  )?.name || "Indian Radio"
+                : song.name}
+            </h2>
 
-            <span>{song.artist}</span>
+            <span>
+              {radioPlaying
+                ? "Live Indian Radio"
+                : song.artist}
+            </span>
           </div>
         </aside>
+      </section>
+
+      {/* INDIA RADIO */}
+      <section
+        id="radio"
+        style={{
+          padding: "60px 20px 120px",
+          maxWidth: "1200px",
+          margin: "0 auto",
+        }}
+      >
+        <div style={{ marginBottom: "25px" }}>
+          <p className="eyebrow">LIVE STREAMING</p>
+
+          <h2
+            style={{
+              fontSize: "32px",
+              margin: "5px 0",
+            }}
+          >
+            📻 Indian Radio
+          </h2>
+
+          <p style={{ opacity: 0.7 }}>
+            Listen to live radio stations from India.
+          </p>
+        </div>
+
+        {radioLoading ? (
+          <div
+            style={{
+              padding: "30px",
+              textAlign: "center",
+              opacity: 0.7,
+            }}
+          >
+            Loading Indian radio stations...
+          </div>
+        ) : radioStations.length === 0 ? (
+          <div
+            style={{
+              padding: "30px",
+              textAlign: "center",
+              opacity: 0.7,
+            }}
+          >
+            No radio stations found.
+          </div>
+        ) : (
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns:
+                "repeat(auto-fill, minmax(250px, 1fr))",
+              gap: "16px",
+            }}
+          >
+            {radioStations.map((station) => (
+              <article
+                key={station.stationuuid}
+                style={{
+                  padding: "18px",
+                  borderRadius: "16px",
+                  background: "rgba(255,255,255,0.06)",
+                  border:
+                    radioPlaying === station.stationuuid
+                      ? "1px solid rgba(255,255,255,0.5)"
+                      : "1px solid rgba(255,255,255,0.08)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "14px",
+                }}
+              >
+                <img
+                  src={
+                    station.favicon ||
+                    "/covers/1.jpg"
+                  }
+                  alt=""
+                  width={55}
+                  height={55}
+                  style={{
+                    width: "55px",
+                    height: "55px",
+                    borderRadius: "12px",
+                    objectFit: "cover",
+                    background: "#222",
+                  }}
+                  onError={(event) => {
+                    event.currentTarget.src =
+                      "/covers/1.jpg";
+                  }}
+                />
+
+                <div
+                  style={{
+                    minWidth: 0,
+                    flex: 1,
+                  }}
+                >
+                  <strong
+                    style={{
+                      display: "block",
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                  >
+                    {station.name}
+                  </strong>
+
+                  <small
+                    style={{
+                      display: "block",
+                      opacity: 0.6,
+                      marginTop: "4px",
+                    }}
+                  >
+                    {station.language || "India"}
+                    {station.codec
+                      ? ` • ${station.codec}`
+                      : ""}
+                  </small>
+
+                  <button
+                    type="button"
+                    onClick={() => playRadio(station)}
+                    style={{
+                      marginTop: "10px",
+                      padding: "7px 14px",
+                      borderRadius: "20px",
+                      border: "none",
+                      cursor: "pointer",
+                      background:
+                        radioPlaying ===
+                        station.stationuuid
+                          ? "rgba(255,255,255,0.2)"
+                          : "white",
+                      color:
+                        radioPlaying ===
+                        station.stationuuid
+                          ? "white"
+                          : "black",
+                      fontWeight: 600,
+                    }}
+                  >
+                    {radioPlaying === station.stationuuid
+                      ? "❚❚ Stop"
+                      : "▶ Play"}
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
       </section>
 
       <section className="about" id="about">
@@ -467,9 +868,10 @@ export default function Home() {
         <h2>Simple. Fast. Music.</h2>
 
         <p>
-          A Next.js music player built with TypeScript and Tailwind CSS. It
-          supports playlist controls, progress seeking, volume control and
-          automatic next-song playback.
+          A Next.js music player connected to the Jamendo API
+          and Indian live radio stations.
+          Search, playback, progress, volume, playlist and
+          radio controls are handled by the application.
         </p>
       </section>
 
@@ -501,9 +903,21 @@ export default function Home() {
             />
 
             <div className="current-song-text">
-              <strong>{song.name}</strong>
+              <strong>
+                {radioPlaying
+                  ? radioStations.find(
+                      (station) =>
+                        station.stationuuid === radioPlaying
+                    )?.name || "Indian Radio"
+                  : song.name}
+              </strong>
+
               <small>
-                {isPlaying ? "Now Playing" : "Ready to play"}
+                {radioPlaying
+                  ? "Live Radio"
+                  : isPlaying
+                  ? "Now Playing"
+                  : "Ready to play"}
               </small>
             </div>
           </div>
@@ -557,7 +971,9 @@ export default function Home() {
             <button
               id="muteButton"
               type="button"
-              aria-label={volume === 0 ? "Unmute" : "Mute"}
+              aria-label={
+                volume === 0 ? "Unmute" : "Mute"
+              }
               onClick={toggleMute}
             >
               {volume === 0 ? "🔇" : "🔊"}
